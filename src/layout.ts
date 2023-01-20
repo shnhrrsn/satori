@@ -16,7 +16,7 @@ import {
 } from './utils'
 import handler from './handler'
 import FontLoader from './font'
-import layoutText from './text'
+import layoutText, { InlineText } from './text'
 import rect from './builder/rect'
 import {Locale, normalizeLocale} from "./language";
 
@@ -66,8 +66,8 @@ export default async function* layout(
 
     if (!isReactElement(element)) {
       // Process as text node.
-      iter = layoutText(String(element), context)
-      yield (await iter.next()).value as { word: string; locale?: Locale; }[]
+      iter = layoutText([new InlineText(String(element))], context)
+      yield (await iter.next()).value as { word: string; locale?: Locale }[]
     } else {
       if (isClass(element.type as Function)) {
         throw new Error('Class component is not supported.')
@@ -83,6 +83,46 @@ export default async function* layout(
     await iter.next()
     const offset = yield
     return (await iter.next(offset)).value as string
+  } else if (element.props?.style?.display === 'contents') {
+    const children = normalizeChildren(element.props.children)
+      .map((child) => {
+        if (!isReactElement(child)) {
+          return new InlineText(String(child))
+        } else if (typeof child === 'function') {
+          throw new Error(
+            'Custom components are not supported as children of `display: contents` elements.'
+          )
+        } else if (child.props?.style?.display !== 'inline') {
+          throw new Error(
+            'Only inline elements are supported as children of `display: contents` elements.'
+          )
+        }
+
+        const children = normalizeChildren(child.props.children)
+        if (children.length > 1) {
+          throw new Error(
+            'Only one child is supported as children of `display: inline` elements.'
+          )
+        } else if (children.length === 0) {
+          return null
+        }
+
+        return new InlineText(String(children[0]), {
+          ...child.props.style,
+        })
+      })
+      .filter(Boolean) as InlineText[]
+
+    const iter = layoutText(children, context)
+    yield (await iter.next()).value as { word: string; locale?: Locale }[]
+
+    await iter.next()
+    const offset = yield
+    return (await iter.next(offset)).value as string
+  } else if (element.props?.style?.display === 'inline') {
+    throw new Error(
+      '`display: inline` must be contained within `display: contents`.'
+    )
   }
 
   // Process as element.
@@ -222,10 +262,11 @@ export default async function* layout(
       children &&
       typeof children !== 'string' &&
       display !== 'flex' &&
+      display !== 'contents' &&
       display !== 'none'
     ) {
       throw new Error(
-        `Expected <div> to have explicit "display: flex" or "display: none" if it has more than one child node.`
+        `Expected <div> to have explicit "display: flex", or "display: contents" or "display: none" if it has more than one child node.`
       )
     }
     baseRenderResult = await rect(
